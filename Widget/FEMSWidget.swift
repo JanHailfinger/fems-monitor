@@ -35,7 +35,10 @@ struct FEMSProvider: TimelineProvider {
             let snapshot = await FEMSClient.fetch()
             let entry = FEMSEntry(date: .now, snapshot: snapshot)
             // Bei Störung häufiger nachsehen als im Normalbetrieb
-            let interval: TimeInterval = snapshot.reachable ? 300 : 120
+            let gewuenscht = TimeInterval(FEMSConfig.widgetInterval * 60)
+            let interval: TimeInterval = snapshot.reachable
+                ? gewuenscht
+                : min(gewuenscht, 120)
             callback.run(Timeline(entries: [entry],
                                   policy: .after(.now.addingTimeInterval(interval))))
         }

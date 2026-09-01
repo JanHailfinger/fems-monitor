@@ -12,6 +12,21 @@ enum FEMSConfig {
     static var password: String {
         UserDefaults(suiteName: suiteName)?.string(forKey: "password") ?? defaultPassword
     }
+
+    /// Abfrageintervall der Menüleisten-App in Sekunden.
+    static let defaultPollInterval = 30
+    static var pollInterval: Int {
+        let wert = UserDefaults(suiteName: suiteName)?.integer(forKey: "pollInterval") ?? 0
+        return wert > 0 ? wert : defaultPollInterval
+    }
+
+    /// Abstand zweier Widget-Aktualisierungen in Minuten. WidgetKit behandelt
+    /// den Wert als Wunsch — bei knappem Systembudget kann er länger ausfallen.
+    static let defaultWidgetInterval = 5
+    static var widgetInterval: Int {
+        let wert = UserDefaults(suiteName: suiteName)?.integer(forKey: "widgetInterval") ?? 0
+        return wert > 0 ? wert : defaultWidgetInterval
+    }
 }
 
 /// Momentaufnahme der Anlagenwerte. Leistungen in Watt.

@@ -35,7 +35,7 @@ final class LiveModel: ObservableObject {
                 let neu = await FEMSClient.fetch()
                 await MainActor.run { self?.snapshot = neu }
                 WidgetCenter.shared.reloadAllTimelines()
-                try? await Task.sleep(for: .seconds(30))
+                try? await Task.sleep(for: .seconds(FEMSConfig.pollInterval))
             }
         }
     }
@@ -148,37 +148,60 @@ private struct SettingsView: View {
     private var host = FEMSConfig.defaultHost
     @AppStorage("password", store: UserDefaults(suiteName: FEMSConfig.suiteName))
     private var password = FEMSConfig.defaultPassword
+    @AppStorage("pollInterval", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var pollInterval = FEMSConfig.defaultPollInterval
+    @AppStorage("widgetInterval", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var widgetInterval = FEMSConfig.defaultWidgetInterval
 
     @State private var pruefung: String?
     @State private var laeuft = false
 
+    private let sekunden = [5, 10, 15, 30, 60, 120, 300]
+    private let minuten = [5, 10, 15, 30, 60]
+
     var body: some View {
         Form {
-            TextField("IP-Adresse", text: $host)
-                .textFieldStyle(.roundedBorder)
-            SecureField("Passwort", text: $password)
-                .textFieldStyle(.roundedBorder)
-
-            HStack {
-                Button("Verbindung testen") { teste() }
-                    .disabled(laeuft)
-                if let pruefung {
-                    Text(pruefung)
-                        .font(.caption)
-                        .foregroundStyle(pruefung.hasPrefix("Verbunden") ? .green : .red)
+            Section("Verbindung") {
+                TextField("IP-Adresse", text: $host)
+                SecureField("Passwort", text: $password)
+                HStack {
+                    Button("Verbindung testen") { teste() }
+                        .disabled(laeuft)
+                    if let pruefung {
+                        Text(pruefung)
+                            .font(.caption)
+                            .foregroundStyle(pruefung.hasPrefix("Verbunden") ? .green : .red)
+                    }
                 }
             }
-            .padding(.top, 4)
+
+            Section("Aktualisierung") {
+                Picker("Menüleiste", selection: $pollInterval) {
+                    ForEach(sekunden, id: \.self) { s in
+                        Text(s < 60 ? "alle \(s) s" : "alle \(s / 60) min").tag(s)
+                    }
+                }
+                Picker("Widget", selection: $widgetInterval) {
+                    ForEach(minuten, id: \.self) { m in
+                        Text("alle \(m) min").tag(m)
+                    }
+                }
+                Text("Solange die Menüleisten-App läuft, aktualisiert sie das Widget bei jeder eigenen Abfrage mit. Der Widget-Wert greift, wenn die App beendet ist — WidgetKit behandelt ihn als Wunsch und kann bei knappem Systembudget seltener laden.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             Text("Standard-Gastzugang des FEMS: Benutzer „x\u{201C}, Passwort „user\u{201C} — ausschließlich lesend.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(20)
-        .frame(width: 360)
+        .formStyle(.grouped)
+        .frame(width: 420, height: 400)
         .onChange(of: host) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
         .onChange(of: password) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
+        .onChange(of: widgetInterval) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
     }
 
     private func teste() {
@@ -188,7 +211,7 @@ private struct SettingsView: View {
             let s = await FEMSClient.fetch()
             laeuft = false
             pruefung = s.reachable
-                ? "Verbunden, Ladezustand \(s.batteryPresent ? "\(s.soc) %" : "Batterie getrennt")"
+                ? "Verbunden, \(s.batteryPresent ? "Ladezustand \(s.soc) %" : "Batterie getrennt")"
                 : "Keine Antwort von \(host)"
             WidgetCenter.shared.reloadAllTimelines()
         }

@@ -23,7 +23,7 @@ Enthalten sind:
 
 - **Desktop-Widget** in drei Größen (klein, mittel, groß)
 - **Menüleisten-Anzeige** mit animiertem Energiefluss und Werteliste
-- **Einstellungen** für IP und Passwort, mit Verbindungstest
+- **Einstellungen** für IP, Passwort und Aktualisierungsintervalle, mit Verbindungstest
 
 ## Voraussetzungen
 
@@ -97,10 +97,19 @@ curl -s -u x:user "http://<IP>/rest/channel/.*/.*" | python3 -m json.tool
 
 ## Aktualisierungsintervall
 
+Beide Intervalle sind in den Einstellungen wählbar:
+
+| Einstellung | Auswahl | Standard |
+|---|---|---|
+| Menüleiste | 5 s bis 5 min | 30 s |
+| Widget | 5 bis 60 min | 5 min |
+
 WidgetKit rendert Standbilder, ein Widget kann sich nicht laufend selbst
-aktualisieren. Die Timeline erneuert sich alle 5 Minuten, bei nicht
-erreichbarer Anlage alle 2. Solange die Menüleisten-App läuft, fragt sie alle
-30 Sekunden ab und stößt dabei jedes Mal eine Widget-Aktualisierung an.
+aktualisieren, und der eingestellte Wert ist für das System nur ein Wunsch —
+bei knappem Budget lädt es seltener. Solange die Menüleisten-App läuft, stößt
+sie bei jeder eigenen Abfrage zusätzlich eine Widget-Aktualisierung an; dann
+ist das Widget so frisch wie das Menüleisten-Intervall. Ist eine Anlage nicht
+erreichbar, wird höchstens 2 Minuten bis zum nächsten Versuch gewartet.
 
 ## Eigene Bundle-ID
 
