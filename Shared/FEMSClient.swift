@@ -88,6 +88,53 @@ struct FEMSClient {
         "ProductionActivePower", "ConsumptionActivePower", "State"
     ]
 
+    private static let energyChannels = [
+        "ProductionActiveEnergy", "ConsumptionActiveEnergy",
+        "GridBuyActiveEnergy", "GridSellActiveEnergy",
+        "EssActiveChargeEnergy", "EssActiveDischargeEnergy", "EssSoc"
+    ]
+
+    /// Kumulierte Zählerstände für den Verlauf.
+    static func fetchCounters() async -> EnergyCounters? {
+        guard let values = await frage(energyChannels) else { return nil }
+        return EnergyCounters(
+            production: values["ProductionActiveEnergy"] ?? 0,
+            consumption: values["ConsumptionActiveEnergy"] ?? 0,
+            gridBuy: values["GridBuyActiveEnergy"] ?? 0,
+            gridSell: values["GridSellActiveEnergy"] ?? 0,
+            essCharge: values["EssActiveChargeEnergy"] ?? 0,
+            essDischarge: values["EssActiveDischargeEnergy"] ?? 0,
+            soc: values["EssSoc"] ?? 0
+        )
+    }
+
+    /// Fragt eine Kanalgruppe in einem Aufruf ab.
+    private static func frage(_ kanaele: [String]) async -> [String: Int]? {
+        let pattern = "(" + kanaele.joined(separator: "|") + ")"
+        guard let encoded = pattern.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
+              let url = URL(string: "http://\(FEMSConfig.host)/rest/channel/_sum/\(encoded)")
+        else { return nil }
+
+        var request = URLRequest(url: url, timeoutInterval: 8)
+        let token = Data("x:\(FEMSConfig.password)".utf8).base64EncodedString()
+        request.setValue("Basic \(token)", forHTTPHeaderField: "Authorization")
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+            let decoded = try JSONDecoder().decode([Channel].self, from: data)
+            var values: [String: Int] = [:]
+            for channel in decoded {
+                let key = channel.address.split(separator: "/").last.map(String.init) ?? ""
+                values[key] = channel.value?.intValue ?? 0
+            }
+            return values
+        } catch {
+            return nil
+        }
+    }
+
     static func fetch() async -> FEMSSnapshot {
         let pattern = "(" + channels.joined(separator: "|") + ")"
         guard let encoded = pattern.addingPercentEncoding(

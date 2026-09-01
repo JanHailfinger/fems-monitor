@@ -14,6 +14,11 @@ struct FEMSMonitorApp: App {
         }
         .menuBarExtraStyle(.window)
 
+        Window("Verlauf", id: "history") {
+            HistoryView()
+        }
+        .defaultSize(width: 700, height: 560)
+
         Settings {
             SettingsView()
         }
@@ -28,6 +33,10 @@ final class LiveModel: ObservableObject {
 
     init() { start() }
 
+    /// Zählerstände werden seltener geschrieben als die Momentanwerte geholt.
+    private var letzterVerlaufspunkt: Date = .distantPast
+    private let verlaufsabstand: TimeInterval = 300
+
     func start() {
         task?.cancel()
         task = Task { [weak self] in
@@ -35,8 +44,18 @@ final class LiveModel: ObservableObject {
                 let neu = await FEMSClient.fetch()
                 await MainActor.run { self?.snapshot = neu }
                 WidgetCenter.shared.reloadAllTimelines()
+                await self?.verlaufSchreiben(erreichbar: neu.reachable)
                 try? await Task.sleep(for: .seconds(FEMSConfig.pollInterval))
             }
+        }
+    }
+
+    private func verlaufSchreiben(erreichbar: Bool) async {
+        guard erreichbar, Date.now.timeIntervalSince(letzterVerlaufspunkt) >= verlaufsabstand
+        else { return }
+        letzterVerlaufspunkt = .now
+        if let zaehler = await FEMSClient.fetchCounters() {
+            HistoryStore.shared.speichern(zaehler)
         }
     }
 
@@ -83,6 +102,11 @@ private struct MenuLabel: View {
 private struct MenuContent: View {
     @ObservedObject var model: LiveModel
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openWindow) private var openWindow
+
+    private func oeffneFenster(id: String) {
+        openWindow(id: id)
+    }
 
     private func oeffneEinstellungen() {
         NSApp.activate(ignoringOtherApps: true)
@@ -124,6 +148,10 @@ private struct MenuContent: View {
             VStack(spacing: 0) {
                 MenuAction(titel: "Aktualisieren", symbol: "arrow.clockwise") {
                     model.refreshNow()
+                }
+                MenuAction(titel: "Verlauf …", symbol: "chart.bar") {
+                    NSApp.activate(ignoringOtherApps: true)
+                    oeffneFenster(id: "history")
                 }
                 MenuAction(titel: "Einstellungen …", symbol: "gearshape") {
                     oeffneEinstellungen()

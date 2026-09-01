@@ -24,6 +24,7 @@ Enthalten sind:
 - **Desktop-Widget** in drei Größen (klein, mittel, groß)
 - **Menüleisten-Anzeige** mit animiertem Energiefluss und Werteliste
 - **Einstellungen** für IP, Passwort und Aktualisierungsintervalle, mit Verbindungstest
+- **Verlauf** mit Tagesbilanzen aus einer lokalen SQLite-Datenbank
 
 ## Voraussetzungen
 
@@ -95,6 +96,42 @@ Batterie, Wechselrichterregister und die MPPT-Strings einzeln. Alles auflisten:
 curl -s -u x:user "http://<IP>/rest/channel/.*/.*" | python3 -m json.tool
 ```
 
+## Verlauf
+
+Die App legt alle 5 Minuten die kumulierten Zählerstände in einer SQLite-Datei
+ab (`history.sqlite` im App-Group-Container). Die Tagesbilanz entsteht als
+Differenz zwischen erstem und letztem Stand des Tages, bleibt also auch dann
+korrekt, wenn der Rechner zwischendurch aus war.
+
+Menüleiste → **Verlauf …** zeigt ein Balkendiagramm über 30 Tage, umschaltbar
+zwischen Erzeugung, Verbrauch, Einspeisung und Netzbezug, dazu eine Tabelle mit
+Autarkiegrad je Tag.
+
+Die Datenbank lässt sich auch direkt auswerten:
+
+```bash
+sqlite3 ~/Library/Group\ Containers/group.de.hailfinger.FEMSMonitor/history.sqlite \
+  "SELECT date(ts,'unixepoch','localtime') tag,
+          (MAX(production)-MIN(production))/1000.0 erzeugung_kwh,
+          (MAX(grid_sell)-MIN(grid_sell))/1000.0   einspeisung_kwh
+   FROM readings GROUP BY tag;"
+```
+
+### Warum kein Zugriff auf die FEMS-Historie
+
+Das FEMS speichert selbst Verlaufsdaten (`rrd4j0`), gibt sie aber nicht über
+die REST-App heraus — `/rest/jsonrpc` antwortet mit `Unhandled REST target`.
+Erreichbar wären sie nur über die Websocket-API auf Port 8085, die eine eigene
+Authentifizierung und ein anderes Protokoll verlangt. Deshalb der eigene
+Verlauf, der ab Installation aufgebaut wird.
+
+### Speicherwerte bei Hybrid-Wechselrichtern
+
+`EssActiveChargeEnergy` und `EssActiveDischargeEnergy` zählen beim Hybrid-Gerät
+die durchgeleitete PV-Erzeugung mit und liegen daher deutlich über der
+tatsächlichen Batterienutzung. Die Tabelle zeigt deshalb nur Erzeugung,
+Verbrauch, Einspeisung und Netzbezug.
+
 ## Aktualisierungsintervall
 
 Beide Intervalle sind in den Einstellungen wählbar:
@@ -121,9 +158,9 @@ zusammenpassen.
 ## Aufbau
 
 ```
-App/       Menüleisten-App und Einstellungen
+App/       Menüleisten-App, Einstellungen und Verlaufsansicht
 Widget/    WidgetKit-Extension mit den drei Größen
-Shared/    REST-Client und der Energiefluss-Ring (von beiden genutzt)
+Shared/    REST-Client, Energiefluss-Ring und SQLite-Verlauf
 ```
 
 ## Hinweise
