@@ -103,9 +103,23 @@ ab (`history.sqlite` im App-Group-Container). Die Tagesbilanz entsteht als
 Differenz zwischen erstem und letztem Stand des Tages, bleibt also auch dann
 korrekt, wenn der Rechner zwischendurch aus war.
 
-Menüleiste → **Verlauf …** zeigt ein Balkendiagramm über 30 Tage, umschaltbar
-zwischen Erzeugung, Verbrauch, Einspeisung und Netzbezug, dazu eine Tabelle mit
-Autarkiegrad je Tag.
+Menüleiste → **Verlauf …** zeigt ein Balkendiagramm, umschaltbar zwischen
+Erzeugung, Verbrauch, Einspeisung und Netzbezug, dazu eine Tabelle mit
+Autarkiegrad je Zeitfenster.
+
+Auflösung und Zeitraum sind frei wählbar:
+
+| Auflösung | vorgeschlagener Zeitraum |
+|---|---|
+| 5 Minuten | 6 Stunden |
+| 15 Minuten | 24 Stunden |
+| Stunde | 3 Tage |
+| Tag | 30 Tage |
+| Monat | 1 Jahr |
+
+Der Wert eines Fensters entsteht als Summe der Differenzen aufeinanderfolgender
+Messpunkte, nicht als `MAX − MIN` des Fensters — sonst lieferten feine
+Auflösungen, bei denen ein Fenster nur einen Messpunkt enthält, immer null.
 
 Die Datenbank lässt sich auch direkt auswerten:
 

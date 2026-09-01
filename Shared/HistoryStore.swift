@@ -14,7 +14,50 @@ struct EnergyCounters: Sendable, Equatable {
     var soc = 0
 }
 
-/// Tagesbilanz, aus der Differenz der Zählerstände gebildet.
+/// Zeitliche Auflösung des Verlaufs.
+enum Resolution: String, CaseIterable, Identifiable, Sendable {
+    case fiveMinutes = "5 Minuten"
+    case quarter     = "15 Minuten"
+    case hour        = "Stunde"
+    case day         = "Tag"
+    case month       = "Monat"
+
+    var id: String { rawValue }
+
+    /// SQL-Ausdruck, der einen Messpunkt seinem Zeitfenster zuordnet.
+    var bucketSQL: String {
+        switch self {
+        case .fiveMinutes: return "CAST(ts / 300 AS INTEGER) * 300"
+        case .quarter:     return "CAST(ts / 900 AS INTEGER) * 900"
+        case .hour:        return "CAST(ts / 3600 AS INTEGER) * 3600"
+        case .day:         return "CAST(strftime('%s', date(ts, 'unixepoch', 'localtime'), 'utc') AS INTEGER)"
+        case .month:       return "CAST(strftime('%s', date(ts, 'unixepoch', 'localtime', 'start of month'), 'utc') AS INTEGER)"
+        }
+    }
+
+    /// Vorgeschlagener Zeitraum, den man bei dieser Auflösung sinnvoll ansieht.
+    var defaultSpan: TimeInterval {
+        switch self {
+        case .fiveMinutes: return 6 * 3600
+        case .quarter:     return 24 * 3600
+        case .hour:        return 3 * 24 * 3600
+        case .day:         return 30 * 24 * 3600
+        case .month:       return 365 * 24 * 3600
+        }
+    }
+
+    /// Einheit für die Balkenbreite im Diagramm.
+    var chartUnit: Calendar.Component {
+        switch self {
+        case .fiveMinutes, .quarter: return .minute
+        case .hour:                  return .hour
+        case .day:                   return .day
+        case .month:                 return .month
+        }
+    }
+}
+
+/// Bilanz eines Zeitfensters, aus der Differenz der Zählerstände gebildet.
 struct DayTotals: Identifiable, Sendable {
     var date: Date
     var production = 0
@@ -105,42 +148,50 @@ final class HistoryStore: @unchecked Sendable {
         }
     }
 
-    /// Tagesbilanzen der letzten `tage` Tage, neueste zuerst.
-    /// Der Tageswert ist die Differenz zwischen dem letzten und dem ersten
-    /// Zählerstand des Tages.
-    func tagesbilanzen(tage: Int = 14) -> [DayTotals] {
+    /// Bilanzen je Zeitfenster, älteste zuerst.
+    ///
+    /// Anders als bei reinem MAX−MIN je Fenster wird hier die Differenz zum
+    /// jeweils vorherigen Messpunkt gebildet und im Fenster aufsummiert. Nur
+    /// so liefern feine Auflösungen brauchbare Werte, bei denen ein Fenster
+    /// oft nur einen einzigen Messpunkt enthält.
+    func bilanzen(resolution: Resolution, span: TimeInterval? = nil) -> [DayTotals] {
         queue.sync {
             guard let db else { return [] }
-            let seit = Calendar.current.date(byAdding: .day, value: -tage, to: .now) ?? .now
+            let zeitraum = span ?? resolution.defaultSpan
+            let seit = Date.now.addingTimeInterval(-zeitraum)
+
             let sql = """
+                WITH diffs AS (
+                    SELECT
+                        ts,
+                        MAX(0, production    - LAG(production)    OVER (ORDER BY ts)) AS d_prod,
+                        MAX(0, consumption   - LAG(consumption)   OVER (ORDER BY ts)) AS d_cons,
+                        MAX(0, grid_buy      - LAG(grid_buy)      OVER (ORDER BY ts)) AS d_buy,
+                        MAX(0, grid_sell     - LAG(grid_sell)     OVER (ORDER BY ts)) AS d_sell,
+                        MAX(0, ess_charge    - LAG(ess_charge)    OVER (ORDER BY ts)) AS d_chg,
+                        MAX(0, ess_discharge - LAG(ess_discharge) OVER (ORDER BY ts)) AS d_dis
+                    FROM readings
+                )
                 SELECT
-                    date(ts, 'unixepoch', 'localtime') AS tag,
-                    MAX(production)    - MIN(production),
-                    MAX(consumption)   - MIN(consumption),
-                    MAX(grid_buy)      - MIN(grid_buy),
-                    MAX(grid_sell)     - MIN(grid_sell),
-                    MAX(ess_charge)    - MIN(ess_charge),
-                    MAX(ess_discharge) - MIN(ess_discharge)
-                FROM readings
+                    \(resolution.bucketSQL) AS bucket,
+                    SUM(d_prod), SUM(d_cons), SUM(d_buy),
+                    SUM(d_sell), SUM(d_chg), SUM(d_dis)
+                FROM diffs
                 WHERE ts >= ?
-                GROUP BY tag
-                ORDER BY tag DESC
+                GROUP BY bucket
+                ORDER BY bucket ASC
                 """
+
             var stmt: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return [] }
             defer { sqlite3_finalize(stmt) }
             sqlite3_bind_int64(stmt, 1, Int64(seit.timeIntervalSince1970))
 
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd"
-            formatter.timeZone = .current
-
             var ergebnis: [DayTotals] = []
             while sqlite3_step(stmt) == SQLITE_ROW {
-                guard let cText = sqlite3_column_text(stmt, 0),
-                      let tag = formatter.date(from: String(cString: cText)) else { continue }
+                let bucket = sqlite3_column_int64(stmt, 0)
                 ergebnis.append(DayTotals(
-                    date: tag,
+                    date: Date(timeIntervalSince1970: TimeInterval(bucket)),
                     production: Int(sqlite3_column_int(stmt, 1)),
                     consumption: Int(sqlite3_column_int(stmt, 2)),
                     gridBuy: Int(sqlite3_column_int(stmt, 3)),
