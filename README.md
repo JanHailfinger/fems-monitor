@@ -25,6 +25,7 @@ Enthalten sind:
 - **Menüleisten-Anzeige** mit animiertem Energiefluss und Werteliste
 - **Einstellungen** für IP, Passwort und Aktualisierungsintervalle, mit Verbindungstest
 - **Verlauf** mit Tagesbilanzen aus einer lokalen SQLite-Datenbank
+- **Wärmepumpe** aus der Viessmann-Cloud, optional
 
 ## Voraussetzungen
 
@@ -145,6 +146,27 @@ Verlauf, der ab Installation aufgebaut wird.
 die durchgeleitete PV-Erzeugung mit und liegen daher deutlich über der
 tatsächlichen Batterienutzung. Die Tabelle zeigt deshalb nur Erzeugung,
 Verbrauch, Einspeisung und Netzbezug.
+
+## Wärmepumpe anbinden (optional)
+
+Läuft im Haus eine Viessmann-Wärmepumpe, zeigt die Menüleisten-Ansicht deren
+Betriebszustand und Temperaturen neben den PV-Werten.
+
+1. Im [Viessmann-Entwicklerportal](https://app.developer.viessmann-climatesolutions.com)
+   unter *My Dashboard* einen Client anlegen, reCAPTCHA deaktivieren und als
+   Redirect-URI `de.hailfinger.femsmonitor://oauth` eintragen
+2. Client-ID in *Einstellungen → Wärmepumpe (Viessmann)* eintragen
+3. **Bei Viessmann anmelden** — die Anmeldung läuft im Systembrowser
+
+Technisch: Authorization Code Flow mit PKCE gegen
+`https://iam.viessmann-climatesolutions.com/idp/v3/authorize`, Scopes
+`IoT User offline_access`, Daten von
+`https://api.viessmann-climatesolutions.com/iot/v2`. Die App erneuert den
+Access-Token selbstständig über den Refresh-Token.
+
+Die Cloud begrenzt die Zahl der Aufrufe pro Tag, deshalb ist das Intervall
+getrennt einstellbar (Standard 10 Minuten, rund 290 Aufrufe täglich). Bei
+Überschreitung meldet die App „Abrufgrenze der Viessmann-Cloud erreicht".
 
 ## Aktualisierungsintervall
 

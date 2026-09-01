@@ -29,9 +29,37 @@ struct FEMSMonitorApp: App {
 @MainActor
 final class LiveModel: ObservableObject {
     @Published var snapshot = FEMSSnapshot.placeholder
+    @Published var heatPump: HeatPumpState?
+    @Published var heatPumpFehler: String?
     private var task: Task<Void, Never>?
+    private var waermepumpeTask: Task<Void, Never>?
+    private var letzteWaermepumpe: Date = .distantPast
 
-    init() { start() }
+    init() {
+        start()
+        starteWaermepumpe()
+    }
+
+    /// Die Viessmann-Cloud begrenzt die Aufrufe pro Tag, daher deutlich
+    /// seltener als die lokale FEMS-Abfrage.
+    func starteWaermepumpe() {
+        waermepumpeTask?.cancel()
+        guard ViessmannConfig.isConnected else { return }
+        waermepumpeTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    let zustand = try await ViessmannClient.zustand()
+                    await MainActor.run {
+                        self?.heatPump = zustand
+                        self?.heatPumpFehler = nil
+                    }
+                } catch {
+                    await MainActor.run { self?.heatPumpFehler = error.localizedDescription }
+                }
+                try? await Task.sleep(for: .seconds(ViessmannConfig.pollMinutes * 60))
+            }
+        }
+    }
 
     /// Zählerstände werden seltener geschrieben als die Momentanwerte geholt.
     private var letzterVerlaufspunkt: Date = .distantPast
@@ -136,6 +164,11 @@ private struct MenuContent: View {
                 }
             }
 
+            if let wp = model.heatPump {
+                Divider()
+                WaermepumpeZeile(zustand: wp)
+            }
+
             if model.snapshot.state >= 2 {
                 Label(model.snapshot.state == 3 ? "Störung" : "Warnung",
                       systemImage: "exclamationmark.triangle.fill")
@@ -181,6 +214,12 @@ private struct SettingsView: View {
     @AppStorage("widgetInterval", store: UserDefaults(suiteName: FEMSConfig.suiteName))
     private var widgetInterval = FEMSConfig.defaultWidgetInterval
 
+    @AppStorage("viClientID", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var viClientID = ""
+    @AppStorage("viPollMinutes", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var viPoll = 10
+
+    @StateObject private var auth = ViessmannAuth()
     @State private var pruefung: String?
     @State private var laeuft = false
 
@@ -224,9 +263,34 @@ private struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+
+            Section("Wärmepumpe (Viessmann)") {
+                TextField("Client-ID", text: $viClientID)
+                Picker("Abfrage", selection: $viPoll) {
+                    ForEach([5, 10, 15, 30, 60], id: \.self) { Text("alle \($0) min").tag($0) }
+                }
+                HStack {
+                    if ViessmannConfig.isConnected {
+                        Button("Abmelden") { auth.abmelden() }
+                        Text("verbunden").font(.caption).foregroundStyle(.green)
+                    } else {
+                        Button("Bei Viessmann anmelden") { auth.anmelden() }
+                            .disabled(viClientID.isEmpty || auth.laeuft)
+                    }
+                    if let m = auth.meldung {
+                        Text(m).font(.caption)
+                            .foregroundStyle(m == "Verbunden" ? .green : .red)
+                            .lineLimit(2)
+                    }
+                }
+                Text("Client im Viessmann-Entwicklerportal anlegen und als Redirect-URI „de.hailfinger.femsmonitor://oauth\u{201C} eintragen. Die Anmeldung erfolgt im Systembrowser, die App sieht dein Passwort nicht.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .formStyle(.grouped)
-        .frame(width: 420, height: 400)
+        .frame(width: 460, height: 620)
         .onChange(of: host) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
         .onChange(of: password) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
         .onChange(of: widgetInterval) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
@@ -273,5 +337,49 @@ private struct MenuAction: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+    }
+}
+
+/// Kompakte Anzeige der Wärmepumpendaten aus der Viessmann-Cloud.
+private struct WaermepumpeZeile: View {
+    let zustand: HeatPumpState
+
+    var body: some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 6) {
+                Image(systemName: zustand.compressorActive ? "heat.waves" : "thermometer.medium")
+                    .foregroundStyle(zustand.compressorActive ? .orange : .secondary)
+                Text("Wärmepumpe")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(zustand.compressorActive ? "läuft" : "aus")
+                    .fontWeight(.medium)
+            }
+            .font(.system(size: 12))
+
+            HStack(spacing: 10) {
+                if let t = zustand.outsideTemperature {
+                    wert("Außen", String(format: "%.1f °C", t))
+                }
+                if let t = zustand.supplyTemperature {
+                    wert("Vorlauf", String(format: "%.1f °C", t))
+                }
+                if let t = zustand.hotWaterTemperature {
+                    wert("Wasser", String(format: "%.0f °C", t))
+                }
+            }
+        }
+    }
+
+    private func wert(_ titel: String, _ text: String) -> some View {
+        VStack(spacing: 1) {
+            Text(text)
+                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+            Text(titel)
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity)
     }
 }
