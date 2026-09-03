@@ -24,16 +24,28 @@ struct FEMSProvider: TimelineProvider {
         }
         let callback = Callback(run: completion)
         Task {
-            let snapshot = await FEMSClient.fetch()
-            callback.run(FEMSEntry(date: .now, snapshot: snapshot))
+            let snapshot: FEMSSnapshot
+            if let gespeichert = SnapshotCache.laden() {
+                snapshot = gespeichert
+            } else {
+                snapshot = await FEMSClient.fetch()
+            }
+            callback.run(FEMSEntry(date: snapshot.date, snapshot: snapshot))
         }
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<FEMSEntry>) -> Void) {
         let callback = Callback(run: completion)
         Task {
-            let snapshot = await FEMSClient.fetch()
-            let entry = FEMSEntry(date: .now, snapshot: snapshot)
+            // Zuerst der Messwert der App; nur wenn der fehlt oder veraltet
+            // ist, fragt das Widget selbst bei der Anlage nach.
+            let snapshot: FEMSSnapshot
+            if let gespeichert = SnapshotCache.laden() {
+                snapshot = gespeichert
+            } else {
+                snapshot = await FEMSClient.fetch()
+            }
+            let entry = FEMSEntry(date: snapshot.date, snapshot: snapshot)
             // Bei Störung häufiger nachsehen als im Normalbetrieb
             let gewuenscht = TimeInterval(FEMSConfig.widgetInterval * 60)
             let interval: TimeInterval = snapshot.reachable
@@ -201,18 +213,27 @@ private struct FlowRow: View {
 private struct OfflineView: View {
     let compact: Bool
 
+    /// Sagt, ob überhaupt ein Messwert vorliegt und wie alt er ist.
+    private var hinweis: String {
+        if let alter = SnapshotCache.alter() {
+            return "letzter Wert vor \(Int(alter / 60)) min\n\(FEMSConfig.host)"
+        }
+        return "App starten\n\(FEMSConfig.host)"
+    }
+
     var body: some View {
         VStack(spacing: 6) {
             Image(systemName: "wifi.slash")
                 .font(.system(size: compact ? 20 : 24))
                 .foregroundStyle(.secondary)
-            Text("FEMS nicht erreichbar")
+            Text("Keine Daten")
                 .font(.system(size: compact ? 10 : 12, weight: .medium))
                 .multilineTextAlignment(.center)
             if !compact {
-                Text(FEMSConfig.host)
-                    .font(.system(size: 10))
+                Text(hinweis)
+                    .font(.system(size: 9))
                     .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -183,7 +183,7 @@ struct EnergyRingView: View {
     }
 
     private func centerReadout(size: Double) -> some View {
-        VStack(spacing: size * 0.012) {
+        VStack(spacing: size * 0.008) {
             if snapshot.batteryPresent {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
                     Text("\(snapshot.soc)")
@@ -198,8 +198,18 @@ struct EnergyRingView: View {
                     .font(.system(size: size * 0.15, weight: .light))
                     .foregroundStyle(.secondary)
             }
-            Text(batteryHint)
-                .font(.system(size: size * 0.052, weight: .medium))
+
+            // Reichweite wie beim Auto: wie lange der Speicher noch trägt
+            if let text = snapshot.runtimeText {
+                Text(text)
+                    .font(.system(size: size * 0.082, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(snapshot.runtime?.charging == true ? .green : .primary)
+                    .contentTransition(.numericText())
+            }
+
+            Text(snapshot.runtimeText != nil ? snapshot.runtimeLabel : batteryHint)
+                .font(.system(size: size * 0.05, weight: .medium))
                 .tracking(0.8)
                 .foregroundStyle(.tertiary)
         }

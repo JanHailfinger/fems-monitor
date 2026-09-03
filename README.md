@@ -25,7 +25,9 @@ Enthalten sind:
 - **Menüleisten-Anzeige** mit animiertem Energiefluss und Werteliste
 - **Einstellungen** für IP, Passwort und Aktualisierungsintervalle, mit Verbindungstest
 - **Verlauf** mit Tagesbilanzen aus einer lokalen SQLite-Datenbank
+- **Reichweitenanzeige** wie beim Auto: wie lange der Speicher noch trägt
 - **Wärmepumpe** aus der Viessmann-Cloud, optional
+- **Überschussautomatik**, die die Wärmepumpe bei PV-Überschuss auf Volllast bringt
 
 ## Voraussetzungen
 
@@ -62,6 +64,15 @@ in den Einstellungen änderbar und wird in einer App Group abgelegt, damit
 Widget und App dieselben Werte nutzen.
 
 Die IP deines FEMS findest du im Router oder im FENECON Online-Monitoring.
+
+### Wichtig für das Desktop-Widget
+
+Bei ad-hoc signierten Builds — also ohne Apple-Entwicklerkonto — kann die
+Widget-Extension nicht auf die App Group zugreifen und liest deshalb weder
+die Einstellungen noch den Zwischenspeicher der App. Trage deine Adresse
+daher zusätzlich in `Shared/FEMSClient.swift` bei `defaultHost` ein und baue
+neu. Die Menüleisten-App und der Verlauf funktionieren unabhängig davon über
+die Einstellungen.
 
 ## Wie die Daten geholt werden
 

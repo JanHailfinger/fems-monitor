@@ -31,6 +31,13 @@ final class LiveModel: ObservableObject {
     @Published var snapshot = FEMSSnapshot.placeholder
     @Published var heatPump: HeatPumpState?
     @Published var heatPumpFehler: String?
+    @Published var boost = BoostStatus()
+
+    /// Gemessene Aufnahme der Wärmepumpe in Watt, sofern die Cloud sie liefert.
+    var heatPumpWatt: Int? {
+        guard let kw = heatPump?.powerConsumptionToday else { return nil }
+        return Int(kw * 1000)
+    }
     private var task: Task<Void, Never>?
     private var waermepumpeTask: Task<Void, Never>?
     private var letzteWaermepumpe: Date = .distantPast
@@ -38,6 +45,7 @@ final class LiveModel: ObservableObject {
     init() {
         start()
         starteWaermepumpe()
+        Task { await FEMSClient.aktualisiereKapazitaet() }
     }
 
     /// Die Viessmann-Cloud begrenzt die Aufrufe pro Tag, daher deutlich
@@ -63,16 +71,38 @@ final class LiveModel: ObservableObject {
 
     /// Zählerstände werden seltener geschrieben als die Momentanwerte geholt.
     private var letzterVerlaufspunkt: Date = .distantPast
+    /// Messwerte der Speicherleistung für die geglättete Reichweite.
+    private var speicherVerlauf: [(zeit: Date, watt: Int)] = []
     private let verlaufsabstand: TimeInterval = 300
 
     func start() {
         task?.cancel()
         task = Task { [weak self] in
             while !Task.isCancelled {
-                let neu = await FEMSClient.fetch()
+                var neu = await FEMSClient.fetch()
+                // Speicherleistung über 10 Minuten glätten, damit die
+                // Reichweite nicht bei jedem Lastsprung springt.
+                if let self {
+                    let jetzt = Date.now
+                    self.speicherVerlauf.append((jetzt, neu.battery))
+                    self.speicherVerlauf.removeAll { jetzt.timeIntervalSince($0.zeit) > 600 }
+                    let werte = self.speicherVerlauf.map(\.watt)
+                    if !werte.isEmpty {
+                        neu.smoothedBattery = werte.reduce(0, +) / werte.count
+                    }
+                }
+                SnapshotCache.speichern(neu)
                 await MainActor.run { self?.snapshot = neu }
                 WidgetCenter.shared.reloadAllTimelines()
                 await self?.verlaufSchreiben(erreichbar: neu.reachable)
+                if neu.reachable {
+                    // Netzwert umgedreht: positiv = Einspeisung, negativ = Bezug
+                    let netto = -neu.grid
+                    let wp = await MainActor.run { self?.heatPumpWatt }
+                    await HeatPumpBoost.shared.pruefe(netto: netto, waermepumpe: wp)
+                    let stand = await HeatPumpBoost.shared.status
+                    await MainActor.run { self?.boost = stand }
+                }
                 try? await Task.sleep(for: .seconds(FEMSConfig.pollInterval))
             }
         }
@@ -164,9 +194,30 @@ private struct MenuContent: View {
                 }
             }
 
+            if let r = model.snapshot.runtime, let text = model.snapshot.runtimeText {
+                HStack(spacing: 6) {
+                    Image(systemName: r.charging ? "battery.100.bolt" : "gauge.with.needle")
+                        .foregroundStyle(r.charging ? .green : .secondary)
+                    Text(r.charging ? "voll in" : "reicht noch")
+                        .foregroundStyle(.secondary)
+                    Text(text).fontWeight(.medium).monospacedDigit()
+                    Spacer()
+                    if let bis = model.snapshot.runtimeUntil {
+                        Text(bis, style: .time)
+                            .foregroundStyle(.tertiary)
+                            .monospacedDigit()
+                    }
+                }
+                .font(.system(size: 12))
+            }
+
             if let wp = model.heatPump {
                 Divider()
                 WaermepumpeZeile(zustand: wp)
+            }
+
+            if BoostConfig.enabled {
+                BoostZeile(status: model.boost)
             }
 
             if model.snapshot.state >= 2 {
@@ -220,6 +271,28 @@ private struct SettingsView: View {
     private var viPoll = 10
 
     @StateObject private var auth = ViessmannAuth()
+    @AppStorage("boostEnabled", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostEnabled = false
+    @AppStorage("boostThreshold", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostThreshold = 5000
+    @AppStorage("boostHygiene", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostHygiene = true
+    @AppStorage("boostAverage", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostAverage = 5
+    @AppStorage("boostOffFactor", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostOffFactor = 0.7
+    @AppStorage("boostDelay", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostDelay = 10
+    @AppStorage("boostHold", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostHold = 30
+    @AppStorage("boostTemp", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostTemp = 58
+    @AppStorage("boostNormalTemp", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostNormalTemp = 52
+    @AppStorage("boostStartHour", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostStartHour = 9
+    @AppStorage("boostEndHour", store: UserDefaults(suiteName: FEMSConfig.suiteName))
+    private var boostEndHour = 18
     @State private var pruefung: String?
     @State private var laeuft = false
 
@@ -283,14 +356,67 @@ private struct SettingsView: View {
                             .lineLimit(2)
                     }
                 }
-                Text("Client im Viessmann-Entwicklerportal anlegen und als Redirect-URI „de.hailfinger.femsmonitor://oauth\u{201C} eintragen. Die Anmeldung erfolgt im Systembrowser, die App sieht dein Passwort nicht.")
+                Text("Client im Viessmann-Entwicklerportal anlegen und als Redirect-URI „http://localhost:4200/\u{201C} eintragen. Die Anmeldung öffnet sich im Systembrowser; die App nimmt nur den Rückruf auf Port 4200 entgegen und sieht dein Passwort nicht.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Section("PV-Überschuss in Wärme") {
+                Toggle("Automatik aktiv", isOn: $boostEnabled)
+                    .disabled(!ViessmannConfig.isConnected)
+
+                LabeledContent("Schwelle") {
+                    HStack {
+                        Slider(value: .init(get: { Double(boostThreshold) },
+                                            set: { boostThreshold = Int($0) }),
+                               in: 500...8000, step: 250)
+                        Text("\(boostThreshold) W").monospacedDigit().frame(width: 62, alignment: .trailing)
+                    }
+                }
+                Picker("Mittelwert über", selection: $boostAverage) {
+                    ForEach([2, 3, 5, 10, 15], id: \.self) { Text("\($0) min").tag($0) }
+                }
+                Picker("Ausschalten unter", selection: $boostOffFactor) {
+                    ForEach([0.5, 0.6, 0.7, 0.8, 0.9], id: \.self) { f in
+                        Text("\(Int(Double(boostThreshold) * f)) W").tag(f)
+                    }
+                }
+                Picker("erst nach", selection: $boostDelay) {
+                    ForEach([2, 5, 10, 15, 30], id: \.self) { Text("\($0) min").tag($0) }
+                }
+                Picker("Mindestdauer", selection: $boostHold) {
+                    ForEach([15, 30, 45, 60, 90], id: \.self) { Text("\($0) min").tag($0) }
+                }
+                Toggle("Hygienefunktion mitschalten (Volllast)", isOn: $boostHygiene)
+                HStack {
+                    Picker("Solltemperatur", selection: $boostTemp) {
+                        ForEach(Array(stride(from: 50, through: 60, by: 1)), id: \.self) { Text("\($0) °C").tag($0) }
+                    }
+                    Picker("normal", selection: $boostNormalTemp) {
+                        ForEach(Array(stride(from: 45, through: 55, by: 1)), id: \.self) { Text("\($0) °C").tag($0) }
+                    }
+                }
+                HStack {
+                    Picker("Zeitfenster", selection: $boostStartHour) {
+                        ForEach(Array(0...23), id: \.self) { Text("\($0) Uhr").tag($0) }
+                    }
+                    Picker("bis", selection: $boostEndHour) {
+                        ForEach(Array(1...24), id: \.self) { Text("\($0) Uhr").tag($0) }
+                    }
+                }
+                Button("Solltemperatur jetzt zurücksetzen") {
+                    Task { await HeatPumpBoost.shared.zuruecksetzen() }
+                }
+                .disabled(!ViessmannConfig.isConnected)
+
+                Text("Liegt die Einspeisung länger als eingestellt über der Schwelle, hebt die App die Warmwasser-Solltemperatur an und schaltet die Hygienefunktion ein — das bringt den Verdichter auf Volllast, ohne den elektrischen Heizstab zu bemühen. Fällt die Einspeisung darunter, nimmt sie beides zurück. Geschrieben wird nur bei einem Zustandswechsel, höchstens acht Mal am Tag.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 620)
+        .frame(width: 480, height: 760)
         .onChange(of: host) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
         .onChange(of: password) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
         .onChange(of: widgetInterval) { _, _ in WidgetCenter.shared.reloadAllTimelines() }
@@ -381,5 +507,52 @@ private struct WaermepumpeZeile: View {
                 .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+/// Zeigt, was die Überschussautomatik gerade tut.
+private struct BoostZeile: View {
+    let status: BoostStatus
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: symbol)
+                .foregroundStyle(farbe)
+            Text(status.phase.rawValue)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if status.messpunkte > 0 {
+                Text(status.eigenlast > 0
+                     ? "Ø \(status.mittelwert.powerText) (inkl. WP)"
+                     : "Ø \(status.mittelwert.powerText)")
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+            if status.schaltungenHeute > 0 {
+                Text("\(status.schaltungenHeute)×")
+                    .foregroundStyle(.tertiary)
+                    .monospacedDigit()
+            }
+        }
+        .font(.system(size: 11))
+        .help(status.letzterFehler ?? "")
+    }
+
+    private var symbol: String {
+        switch status.phase {
+        case .aktiv:                 return "flame.fill"
+        case .ueberschussErkannt:    return "hourglass"
+        case .limitErreicht:         return "exclamationmark.circle"
+        case .ausserhalbZeitfenster: return "moon"
+        default:                     return "sun.max"
+        }
+    }
+
+    private var farbe: Color {
+        switch status.phase {
+        case .aktiv:          return .orange
+        case .limitErreicht:  return .red
+        default:              return .secondary
+        }
     }
 }

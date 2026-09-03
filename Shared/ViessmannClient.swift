@@ -7,7 +7,9 @@ enum ViessmannConfig {
     static let tokenURL = "https://iam.viessmann-climatesolutions.com/idp/v3/token"
     static let apiBase = "https://api.viessmann-climatesolutions.com/iot/v2"
     static let scopes = "IoT User offline_access"
-    static let redirectURI = "de.hailfinger.femsmonitor://oauth"
+    /// Viessmann akzeptiert nur http-Redirects, daher Loopback.
+    static let redirectPort: UInt16 = 4200
+    static let redirectURI = "http://localhost:4200/"
 
     private static var defaults: UserDefaults? { UserDefaults(suiteName: FEMSConfig.suiteName) }
 
@@ -208,6 +210,52 @@ struct ViessmannClient {
         return (id, serial, deviceID)
     }
 
+    // MARK: - Schreiben
+
+    /// Sendet ein Kommando an ein Merkmal, z. B. eine neue Solltemperatur.
+    static func kommando(_ feature: String, _ befehl: String,
+                         _ parameter: [String: Any]) async throws {
+        let anlage = try await ersteAnlage()
+        let token = try await gueltigerToken()
+        let pfad = "/features/installations/\(anlage.installation)/gateways/\(anlage.gateway)/devices/\(anlage.device)/features/\(feature)/commands/\(befehl)"
+        guard let url = URL(string: apiBasePfad + pfad) else { throw ViessmannFehler.ungueltigeAntwort }
+
+        var request = URLRequest(url: url, timeoutInterval: 25)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: parameter)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ViessmannFehler.ungueltigeAntwort }
+        if http.statusCode == 429 { throw ViessmannFehler.zuVieleAnfragen }
+        guard http.statusCode == 200 else {
+            let text = String(data: data, encoding: .utf8) ?? ""
+            throw ViessmannFehler.kommandoFehlgeschlagen(text)
+        }
+    }
+
+    private static var apiBasePfad: String { ViessmannConfig.apiBase }
+
+    /// Solltemperatur der Warmwasserbereitung setzen.
+    static func setzeWarmwasserSoll(_ grad: Int) async throws {
+        try await kommando("heating.dhw.temperature.main", "setTargetTemperature",
+                           ["temperature": grad])
+    }
+
+    /// Hygienefunktion schalten. Sie hebt die Verdichterdrehzahl über den
+    /// normalen Sollwert und bringt die Wärmepumpe damit auf Volllast —
+    /// ohne den elektrischen Heizstab zu bemühen.
+    static func setzeHygiene(_ ein: Bool) async throws {
+        try await kommando("heating.dhw.hygiene", "setEnabled", ["enabled": ein])
+    }
+
+    /// Heizkurve eines Kreises setzen — hebt indirekt die Puffertemperatur an.
+    static func setzeHeizkurve(kreis: Int, neigung: Double, niveau: Int) async throws {
+        try await kommando("heating.circuits.\(kreis).heating.curve", "setCurve",
+                           ["slope": neigung, "shift": niveau])
+    }
+
     /// Liest alle Merkmale des Geräts und übersetzt die für uns relevanten.
     static func zustand() async throws -> HeatPumpState {
         let anlage = try await ersteAnlage()
@@ -259,6 +307,7 @@ enum ViessmannFehler: LocalizedError {
     case zuVieleAnfragen
     case serverfehler(Int)
     case ungueltigeAntwort
+    case kommandoFehlgeschlagen(String)
 
     var errorDescription: String? {
         switch self {
@@ -268,6 +317,7 @@ enum ViessmannFehler: LocalizedError {
         case .zuVieleAnfragen:              return "Abrufgrenze der Viessmann-Cloud erreicht"
         case .serverfehler(let code):       return "Viessmann-Server antwortete mit \(code)"
         case .ungueltigeAntwort:            return "Unerwartete Antwort der Viessmann-Cloud"
+        case .kommandoFehlgeschlagen(let t): return "Kommando abgelehnt: \(t.prefix(120))"
         }
     }
 }
